@@ -1,7 +1,7 @@
 # OnTimeRecommend — Cloud Resource Configuration Agent
 
 **Part of the OnTimeRecommend science gateway recommender system**  
-University of Missouri-Columbia · NSF OAC-1730655 / OAC-2006816
+Sanjit Subhash
 
 ---
 
