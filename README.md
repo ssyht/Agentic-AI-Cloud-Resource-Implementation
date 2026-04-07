@@ -24,7 +24,7 @@ The original system used a static 300-instance KNN + ILP approach. This agent re
 
 **Session 1**
 
-<p align="center"> <img src="../img/session1.png" width="600px"></p>
+<p align="center"> <img src="../img/Session1.png" width="600px"></p>
 
 This proves all implementations are correctly coded and behaving as expected. Each test group maps to one implementation:
 
@@ -47,7 +47,7 @@ This proves all implementations are correctly coded and behaving as expected. Ea
 
 **Session 2**
 
-<p align="center"> <img src="../img/session2.png" width="600px"></p>
+<p align="center"> <img src="../img/Session2.png" width="600px"></p>
 
 This is the paper-ready evidence that each implementation actually works at scale. Reading it top to bottom:
 
