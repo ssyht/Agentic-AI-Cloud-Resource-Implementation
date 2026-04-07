@@ -1,7 +1,6 @@
 # OnTimeRecommend — Cloud Resource Configuration Agent
 
-**Part of the OnTimeRecommend science gateway recommender system**  
-Sanjit Subhash
+**Sanjit Subhash**
 
 ---
 
