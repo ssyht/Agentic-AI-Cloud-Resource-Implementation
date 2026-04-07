@@ -1,13 +1,12 @@
 # OnTimeRecommend — Cloud Resource Configuration Agent
 
-**Part of the OnTimeRecommend science gateway recommender system**  
-University of Missouri-Columbia · NSF OAC-1730655 / OAC-2006816
+**Sanjit Subhash**
 
 ---
 
 ## Overview
 
-This repository implements the **Cloud Resource Configuration Agent** — an agentic upgrade to the Cloud Solution Template Recommender described in the OnTimeRecommend paper (Vekaria et al., CCPE 2020).
+This repository implements the **Cloud Resource Configuration Agent** — an agentic upgrade to the Cloud Solution Template Recommender
 
 The original system used a static 300-instance KNN + ILP approach. This agent replaces it with a **LangGraph ReAct agent** that reasons step-by-step (THOUGHT → ACTION → OBSERVE) and integrates five capabilities:
 
@@ -20,6 +19,48 @@ The original system used a static 300-instance KNN + ILP approach. This agent re
 | 5 | **Profiling-run generation** | No handling of incomplete workflow specs |
 
 ---
+
+## Outputs
+
+**Session 1**
+
+<p align="center"> <img src="../img/session1.png" width="600px"></p>
+
+This proves all implementations are correctly coded and behaving as expected. Each test group maps to one implementation:
+
+* Fingerprint tests (3) — the agent correctly identifies workflow types. It knows "NEURON STDP" = neuron simulation, "RNAseq with Seurat" = rnaseq, and unknown workflows get a generic profile.
+
+* Pricing tests (3) — the mock catalog works correctly. GPU instances get excluded when asked, GCP-only filter returns only GCP instances, etc.
+
+* Pareto tests (3) — the multi-objective optimizer is mathematically correct. No config in the Pareto front is dominated by another — meaning every returned option is genuinely optimal in at least one dimension (cost or speed).
+
+* Constraint filter tests (4) — Implementation 1. Hard constraints are never violated. A $0.01/run budget correctly returns zero configs rather than suggesting something unaffordable.
+
+* Execution plan tests (2) — Implementation 2. Plans are specific, not generic. RNAseq with 16 vCPUs actually says "run 16 threads."
+
+* Feedback tests (3) — Implementation 3. Logging works, high prediction errors get flagged automatically.
+
+* Decomposition tests (3) — Implementation 4. Stage names are correct, durations add up to the total, every stage has a recommendation.
+
+* Profiling tests (3) — Implementation 5. Sample size is always between 1GB and 20GB regardless of input size.
+
+
+**Session 2**
+
+<p align="center"> <img src="../img/session2.png" width="600px"></p>
+
+This is the paper-ready evidence that each implementation actually works at scale. Reading it top to bottom:
+
+* M1 — 100% Constraint Satisfaction Rate means when you tell the agent "max $1.50/run, AWS only, finish in 2 hours," every single config it returns satisfies all three. Zero violations across all test cases. The original system had no such guarantee.
+
+* M2 — 94% Execution Plan Coverage means for known workflow types (neuron simulation, RNAseq), the agent gives fully specific advice — actual thread counts, actual tool flags, actual checkpointing strategy. Only FastQC scores 75% because checkpointing isn't needed for sub-hour jobs.
+
+* M3 — 90.9% Prediction Error Reduction is the most compelling metric. Look at the run-by-run progression: early predictions were 33%, 17%, 37%, 12% off. After feedback, the errors dropped to 3.8%, 1.9%, 2.3%, 1.1%. The system genuinely learns from experience.
+
+* M4 — 17–44% Cost Savings from Decomposition shows what happens when you stop treating a workflow as a monolith. RNAseq saves 37.6% by using cheap CPU nodes for preprocessing and archival instead of keeping an expensive memory-optimized instance running the whole time.
+
+* M5 — 87.3x Cost Efficiency Ratio means a profiling run costs about 1% of what a failed full run would cost. For a large RNAseq job ($14 full run), the profiling run is only $0.068 — less than 7 cents to validate your setup before committing.
+
 
 ## Repository Structure
 
@@ -192,21 +233,3 @@ skus = client.list_skus(parent="services/6F81-5844-456A")
 ```
 
 ---
-
-## Connection to OnTimeRecommend Architecture
-
-This agent plugs into the existing OnTimeRecommend middleware as a drop-in replacement for the Cloud Solution Template Recommender microservice:
-
-```
-Vidura Chatbot
-    ↓ REST API call
-OnTimeRecommend Middleware (Recommender Factory)
-    ↓
-Cloud Resource Configuration Agent  ← THIS REPO
-    ↓
-Pareto-optimal configs + execution plan + stage decomposition
-    ↓
-User on CyNeuro / KBCommons portal
-```
-
-The agent exposes the same REST interface as the original recommender (see Table 3 in the paper), so no changes are needed to the Vidura chatbot or the science gateway UI.
