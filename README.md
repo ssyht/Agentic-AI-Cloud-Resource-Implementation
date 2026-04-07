@@ -105,7 +105,7 @@ python metrics/metrics.py
 
 ---
 
-## Code Walkthrough (for Ashish)
+## Code Walkthrough
 
 ### How the agent reasons
 
