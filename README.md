@@ -6,7 +6,7 @@
 
 ## Overview
 
-This repository implements the **Cloud Resource Configuration Agent** — an agentic upgrade to the Cloud Solution Template Recommender described in the OnTimeRecommend paper (Vekaria et al., CCPE 2020).
+This repository implements the **Cloud Resource Configuration Agent** — an agentic upgrade to the Cloud Solution Template Recommender
 
 The original system used a static 300-instance KNN + ILP approach. This agent replaces it with a **LangGraph ReAct agent** that reasons step-by-step (THOUGHT → ACTION → OBSERVE) and integrates five capabilities:
 
@@ -191,21 +191,3 @@ skus = client.list_skus(parent="services/6F81-5844-456A")
 ```
 
 ---
-
-## Connection to OnTimeRecommend Architecture
-
-This agent plugs into the existing OnTimeRecommend middleware as a drop-in replacement for the Cloud Solution Template Recommender microservice:
-
-```
-Vidura Chatbot
-    ↓ REST API call
-OnTimeRecommend Middleware (Recommender Factory)
-    ↓
-Cloud Resource Configuration Agent  ← THIS REPO
-    ↓
-Pareto-optimal configs + execution plan + stage decomposition
-    ↓
-User on CyNeuro / KBCommons portal
-```
-
-The agent exposes the same REST interface as the original recommender (see Table 3 in the paper), so no changes are needed to the Vidura chatbot or the science gateway UI.
