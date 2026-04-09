@@ -98,7 +98,7 @@ def run_query(query: str) -> str:
     )
 
     print("\n" + "=" * 60)
-    print("FINAL RECOMMENDATION")
+    print("HERE IS THE FINAL RECOMMENDATION")
     print("=" * 60)
     print(final)
 
