@@ -6,7 +6,7 @@
 
 ## Overview
 
-This repository implements the **Cloud Resource Configuration Agent** — an agentic upgrade to the Cloud Solution Template Recommender
+This repository implements the **Cloud Resource Configuration Agent**: an agentic upgrade to the Cloud Solution Template Recommender
 
 The original system used a static 300-instance KNN + ILP approach. This agent replaces it with a **LangGraph ReAct agent** that reasons step-by-step (THOUGHT → ACTION → OBSERVE) and integrates five capabilities:
 
