@@ -1,6 +1,6 @@
 # OnTimeRecommend: Cloud Resource Configuration Agent
 
-**Sanjit Subhash | University of Missouri Columbia | Advisor: Ashish Pandey**
+**Sanjit Subhash**
 
 ---
 
