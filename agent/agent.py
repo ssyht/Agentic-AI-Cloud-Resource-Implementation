@@ -1,17 +1,12 @@
 """
 agent.py — LangGraph ReAct Cloud Resource Configuration Agent
-
-The agent follows the ReAct pattern (Reason → Act → Observe → Reason...)
-as shown in the UI mockup from Sanjit's slides:
-  THOUGHT → ACTION → OBS → ACTION → final response
-
-The agent integrates all 5 implementations from the slides into one unified
-reasoning loop. It decides which tools to call based on the user query.
 """
 
 import os
+import sys
 from langgraph.prebuilt import create_react_agent
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from tools.tools import (
     fingerprint_workflow,
@@ -25,56 +20,24 @@ from tools.tools import (
     recommend_profiling_run,
 )
 
-# ─────────────────────────────────────────────
-# System prompt
-# ─────────────────────────────────────────────
+SYSTEM_PROMPT = """You are a cloud resource configuration agent for the OnTimeRecommend science gateway.
 
-SYSTEM_PROMPT = """You are the Cloud Resource Configuration Agent for the OnTimeRecommend science gateway system.
+When a user asks about cloud setup for a scientific workflow, follow these steps IN ORDER:
+1. Call fingerprint_workflow to classify the workflow
+2. Call get_live_pricing with providers=["AWS","GCP","Azure"], exclude_gpu based on fingerprint
+3. Call run_multiobjective_optimization with the pricing results
+4. If the user mentioned a budget or time constraint, call constraint_filter
+5. Call recommend_execution_plan for the best config
+6. Give the user a clear final recommendation
 
-Your job is to help scientists (neuroscientists and bioinformaticians) configure optimal 
-cloud infrastructure for their scientific workflows. You have five core capabilities:
+Always complete all steps and give a full answer. Never stop early."""
 
-1. CONSTRAINT-DRIVEN CONFIGURATION: Enforce hard user constraints (budget, time, region, RAM)
-   before recommending configurations — not just preference ranking.
-
-2. EXECUTION RECOMMENDATION: Recommend HOW to run the workflow (parallelism strategy,
-   checkpointing, execution topology), not just which instance to use.
-
-3. ADAPTIVE FEEDBACK LOOP: Learn from actual run outcomes. Log results and refine future
-   predictions based on real CPU/RAM utilization, success rates, and user acceptance.
-
-4. WORKFLOW DECOMPOSITION: Break complex workflows into stages and assign the right
-   instance type per stage (e.g., cheap CPU for preprocessing, high-RAM for alignment).
-
-5. PROFILING-RUN GENERATION: Before a full deployment, recommend a small-scale profiling 
-   run to learn the workflow's actual behavior — especially for incomplete specs.
-
-REASONING APPROACH:
-- Always start by fingerprinting the workflow type.
-- Then query pricing for matching instances.
-- Run multi-objective optimization to find the Pareto front.
-- Apply any user-specified constraints.
-- Recommend an execution plan for the chosen config.
-- If the user has large/expensive data, suggest a profiling run first.
-- For complex multi-stage workflows, decompose by stage.
-- Always explain your reasoning step by step (THOUGHT → ACTION → OBSERVATION).
-
-Be concise but precise. Always report estimated cost per run AND estimated runtime.
-For Pareto fronts, always show at least the COST_OPTIMAL and PERFORMANCE_OPTIMAL options.
-"""
-
-# ─────────────────────────────────────────────
-# Build agent
-# ─────────────────────────────────────────────
 
 def build_agent():
-    """Construct and return the LangGraph ReAct agent."""
-
-    # Uses Claude claude-sonnet-4-20250514 — strong reasoning for multi-step tool use
     llm = ChatAnthropic(
         model="claude-sonnet-4-20250514",
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        temperature=0,  # deterministic for reproducibility in research
+        temperature=0,
     )
 
     tools = [
@@ -94,36 +57,58 @@ def build_agent():
         tools=tools,
         prompt=SYSTEM_PROMPT,
     )
-
     return agent
 
 
-# ─────────────────────────────────────────────
-# Simple CLI runner
-# ─────────────────────────────────────────────
-
-def run_query(query: str, verbose: bool = True) -> str:
-    """Run a single query through the agent and return the final response."""
+def run_query(query: str) -> str:
     agent = build_agent()
 
-    result = agent.invoke({"messages": [{"role": "user", "content": query}]})
-    final_message = result["messages"][-1].content
+    print("\n" + "=" * 60)
+    print("USER QUERY")
+    print("=" * 60)
+    print(query)
 
-    if verbose:
-        print("\n" + "=" * 60)
-        print("AGENT RESPONSE")
-        print("=" * 60)
-        print(final_message)
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": query}]},
+        config={"recursion_limit": 100},
+    )
 
-    return final_message
+    # Print the full reasoning trace
+    print("\n" + "=" * 60)
+    print("REASONING TRACE")
+    print("=" * 60)
+    for msg in result["messages"]:
+        if isinstance(msg, HumanMessage):
+            pass  # already printed
+        elif isinstance(msg, AIMessage):
+            if msg.content and isinstance(msg.content, str) and msg.content.strip():
+                print(f"\n[THOUGHT]\n{msg.content}")
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    print(f"\n[ACTION] → {tc['name']}()")
+        elif isinstance(msg, ToolMessage):
+            # Truncate long tool outputs for readability
+            content = msg.content if len(msg.content) < 400 else msg.content[:400] + "..."
+            print(f"[OBSERVE] {content}")
+
+    # Final response is the last AIMessage
+    final = next(
+        (m.content for m in reversed(result["messages"]) if isinstance(m, AIMessage) and m.content),
+        "No response generated."
+    )
+
+    print("\n" + "=" * 60)
+    print("FINAL RECOMMENDATION")
+    print("=" * 60)
+    print(final)
+
+    return final
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) > 1:
         query = " ".join(sys.argv[1:])
     else:
-        query = "What cloud setup do I need to run STDP neuron simulations at scale? Budget: $2 per run max."
+        query = "What cloud setup do I need to run STDP neuron simulations? Budget $2 per run, finish within 2 hours."
 
     run_query(query)
