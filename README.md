@@ -1,4 +1,4 @@
-# OnTimeRecommend — Cloud Resource Configuration Agent
+# OnTimeRecommend: Cloud Resource Configuration Agent
 
 **Sanjit Subhash**
 
