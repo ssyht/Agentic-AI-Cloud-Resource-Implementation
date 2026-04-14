@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OnTimeRecommend — Cloud Resource Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f5f7;
+    --bg-tertiary: #f0f0f3;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-tertiary: #aeaeb2;
+    --border: rgba(0,0,0,0.08);
+    --border-hover: rgba(0,0,0,0.15);
+    --accent: #0071e3;
+    --accent-bg: #e8f1fb;
+    --accent-text: #0071e3;
+    --success: #28c840;
+    --success-bg: #eaf8eb;
+    --success-text: #1a7f2a;
+    --warning-bg: #fef9ec;
+    --warning-text: #a67200;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+    --shadow: 0 2px 20px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-primary: #1c1c1e;
+      --bg-secondary: #2c2c2e;
+      --bg-tertiary: #3a3a3c;
+      --text-primary: #f5f5f7;
+      --text-secondary: #aeaeb2;
+      --text-tertiary: #6e6e73;
+      --border: rgba(255,255,255,0.08);
+      --border-hover: rgba(255,255,255,0.15);
+      --accent-bg: #0a2540;
+      --accent-text: #4da3ff;
+      --success-bg: #0d2e10;
+      --success-text: #4cd964;
+      --warning-bg: #2a2010;
+      --warning-text: #ffd60a;
+      --shadow: 0 2px 20px rgba(0,0,0,0.3), 0 0 0 0.5px rgba(255,255,255,0.06);
+    }
+  }
+
+  html, body {
+    height: 100%;
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    min-height: 100vh;
+  }
+
+  .window {
+    width: 100%;
+    max-width: 760px;
+    height: 90vh;
+    max-height: 840px;
+    background: var(--bg-primary);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 0.5px solid var(--border);
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    background: var(--bg-primary);
+    border-bottom: 0.5px solid var(--border);
+    flex-shrink: 0;
+    gap: 12px;
+  }
+
+  .dots { display: flex; gap: 6px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; cursor: default; }
+  .dot.r { background: #ff5f57; }
+  .dot.y { background: #febc2e; }
+  .dot.g { background: #28c840; }
+
+  .titlebar-label {
+    flex: 1;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    letter-spacing: 0.01em;
+  }
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--success-text);
+    background: var(--success-bg);
+    padding: 3px 10px;
+    border-radius: 20px;
+  }
+
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    scroll-behavior: smooth;
+  }
+
+  .messages::-webkit-scrollbar { width: 4px; }
+  .messages::-webkit-scrollbar-track { background: transparent; }
+  .messages::-webkit-scrollbar-thumb { background: var(--border-hover); border-radius: 2px; }
+
+  .welcome {
+    text-align: center;
+    padding: 40px 24px 20px;
+  }
+
+  .welcome-icon {
+    width: 52px; height: 52px;
+    border-radius: 15px;
+    background: var(--accent-bg);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 18px;
+    font-size: 24px;
+  }
+
+  .welcome h1 {
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+  }
+
+  .welcome p {
+    font-size: 14px;
+    color: var(--text-secondary);
+    line-height: 1.65;
+    max-width: 380px;
+    margin: 0 auto 24px;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+  }
+
+  .chip {
+    font-size: 12.5px;
+    font-family: inherit;
+    padding: 7px 14px;
+    border-radius: 20px;
+    border: 0.5px solid var(--border-hover);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .chip:hover {
+    background: var(--accent-bg);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .msg-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    animation: fadeUp 0.2s ease;
+  }
+
+  .msg-row.user { flex-direction: row-reverse; }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .avatar {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    border: 0.5px solid var(--border);
+    background: var(--bg-secondary);
+  }
+
+  .avatar.agent {
+    background: var(--accent-bg);
+    border-color: transparent;
+  }
+
+  .bubble {
+    max-width: 80%;
+    padding: 11px 15px;
+    border-radius: var(--radius-lg);
+    font-size: 14px;
+    line-height: 1.65;
+    color: var(--text-primary);
+  }
+
+  .msg-row.agent .bubble {
+    background: var(--bg-secondary);
+    border: 0.5px solid var(--border);
+    border-top-left-radius: 4px;
+  }
+
+  .msg-row.user .bubble {
+    background: var(--accent);
+    color: #fff;
+    border-top-right-radius: 4px;
+  }
+
+  .trace {
+    margin-top: 10px;
+    background: var(--bg-tertiary);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .trace-header {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+  }
+
+  .trace-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    font-family: 'DM Mono', monospace;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .tag {
+    font-size: 9.5px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 5px;
+    flex-shrink: 0;
+    letter-spacing: 0.05em;
+    margin-top: 1px;
+    text-transform: uppercase;
+  }
+
+  .tag.thought { background: var(--warning-bg); color: var(--warning-text); }
+  .tag.action  { background: var(--accent-bg);  color: var(--accent-text); }
+  .tag.observe { background: var(--success-bg); color: var(--success-text); }
+
+  .result {
+    margin-top: 10px;
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-primary);
+  }
+
+  .result-head {
+    padding: 9px 14px;
+    background: var(--bg-secondary);
+    border-bottom: 0.5px solid var(--border);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+  }
+
+  .result-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 14px;
+    border-bottom: 0.5px solid var(--border);
+    font-size: 13.5px;
+  }
+
+  .result-row:last-child { border-bottom: none; }
+  .result-row.plan-row { display: block; }
+
+  .rl { color: var(--text-secondary); font-size: 13px; }
+  .rv { font-weight: 500; }
+
+  .plan-text {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin-top: 5px;
+  }
+
+  .badge {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 9px;
+    border-radius: 20px;
+  }
+
+  .badge.ok   { background: var(--success-bg); color: var(--success-text); }
+  .badge.info { background: var(--accent-bg);  color: var(--accent-text); }
+  .badge.warn { background: var(--warning-bg); color: var(--warning-text); }
+
+  .impl-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .impl-tag {
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    border: 0.5px solid var(--border-hover);
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+  }
+
+  .typing {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 4px 2px;
+  }
+
+  .typing span {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    animation: bounce 1.2s infinite;
+  }
+
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); }
+    30%           { transform: translateY(-5px); }
+  }
+
+  .input-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border-top: 0.5px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .input-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    background: var(--bg-secondary);
+    border: 0.5px solid var(--border-hover);
+    border-radius: 22px;
+    padding: 0 16px;
+    transition: border-color 0.15s;
+  }
+
+  .input-wrap:focus-within { border-color: var(--accent); }
+
+  #q {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--text-primary);
+    padding: 10px 0;
+    resize: none;
+    max-height: 120px;
+    line-height: 1.5;
+  }
+
+  #q::placeholder { color: var(--text-tertiary); }
+
+  .send {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .send:hover { opacity: 0.85; }
+  .send:active { transform: scale(0.92); }
+
+  .send svg { width: 16px; height: 16px; fill: #fff; }
+
+  .footer-note {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    padding: 6px 0 10px;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="window">
+  <div class="titlebar">
+    <div class="dots">
+      <div class="dot r"></div>
+      <div class="dot y"></div>
+      <div class="dot g"></div>
+    </div>
+    <div class="titlebar-label">OnTimeRecommend — Cloud Resource Agent</div>
+    <div class="status">
+      <div class="status-dot"></div>
+      mock mode
+    </div>
+  </div>
+
+  <div class="messages" id="msgs">
+    <div class="welcome" id="welcome">
+      <div class="welcome-icon">☁️</div>
+      <h1>Cloud Resource Agent</h1>
+      <p>Describe your scientific workflow and I will recommend the optimal cloud configuration across AWS, GCP, and Azure.</p>
+      <div class="chips">
+        <button class="chip" onclick="fill('What cloud setup do I need for STDP neuron simulations? Budget $2 per run, finish within 2 hours.')">🧠 Neuron simulation</button>
+        <button class="chip" onclick="fill('Variant calling workflow on AWS EC2 only, CPU based, max $1.50 per run, finish within 24 hours.')">🧬 Variant calling</button>
+        <button class="chip" onclick="fill('RNAseq gene expression analysis, decompose into stages to minimize cost.')">🔬 RNAseq decomposition</button>
+        <button class="chip" onclick="fill('I have a 150GB variant calling dataset. Recommend a profiling run before full deployment.')">📊 Profiling run</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="input-bar">
+    <div class="input-wrap">
+      <textarea id="q" rows="1" placeholder="Describe your workflow..." onkeydown="onKey(event)" oninput="resize(this)"></textarea>
+    </div>
+    <button class="send" onclick="send()">
+      <svg viewBox="0 0 16 16"><path d="M1.5 8L14.5 1.5 9.5 8l5 6.5z"/></svg>
+    </button>
+  </div>
+  <div class="footer-note">OnTimeRecommend · University of Missouri · NSF OAC-1730655</div>
+</div>
+
+<script>
+const DEMOS = {
+  neuron: {
+    trace: [
+      {t:'thought', s:'Classifying workflow — CPU-bound neuron simulation detected, no GPU needed'},
+      {t:'action',  s:"fingerprint_workflow('STDP neuron simulation')"},
+      {t:'observe', s:'workflow_type: neuron_simulation | cpu: high | ram: medium | gpu: false'},
+      {t:'action',  s:"get_live_pricing(providers=['AWS','GCP','Azure'], exclude_gpu=true)"},
+      {t:'observe', s:'19 instances returned across 3 providers, sorted by price/hr'},
+      {t:'action',  s:"run_multiobjective_optimization(instances, 'neuron_simulation')"},
+      {t:'observe', s:'Pareto front: 3 non-dominated configs (cost vs runtime)'},
+      {t:'action',  s:'constraint_filter(pareto, max_cost=2.00, max_runtime=2.0)'},
+      {t:'observe', s:'2 feasible configs | 1 rejected (exceeded budget)'},
+      {t:'action',  s:"recommend_execution_plan('neuron_simulation', 'c6i.2xlarge')"},
+      {t:'observe', s:'Execution plan: 4 parallel sweeps, checkpoint every 500ms, single VM'},
+    ],
+    result: {
+      instance:'AWS c6i.2xlarge', compute:'8 vCPUs · 16 GB RAM · 100 GB SSD',
+      cost:'$0.71 / run', runtime:'~2.1 hrs', badge:'COST OPTIMAL', badgeClass:'ok',
+      plan:'Run 4 parallel parameter sweeps via GNU Parallel · Checkpoint every 500ms simulated time · Single VM topology · Monitor CPU and RAM on first run'
+    },
+    impls: ['Constraint filter','Execution plan','Pareto optimization']
+  },
+  variant: {
+    trace: [
+      {t:'thought', s:'Variant calling bioinformatics — AWS only constraint + CPU only detected'},
+      {t:'action',  s:"fingerprint_workflow('variant calling bioinformatics AWS EC2')"},
+      {t:'observe', s:'workflow_type: rnaseq | cpu: high | ram: high | gpu: false'},
+      {t:'action',  s:"get_live_pricing(providers=['AWS'], exclude_gpu=true)"},
+      {t:'observe', s:'8 AWS CPU instances returned'},
+      {t:'action',  s:"run_multiobjective_optimization(instances, 'rnaseq')"},
+      {t:'observe', s:'Pareto front: COST_OPTIMAL c6i.2xlarge | PERF c6i.8xlarge'},
+      {t:'action',  s:'constraint_filter(pareto, max_cost=1.50, max_runtime=24, region=AWS)'},
+      {t:'observe', s:'1 feasible | 2 rejected — constraint satisfaction rate: 100%'},
+    ],
+    result: {
+      instance:'AWS c6i.2xlarge', compute:'8 vCPUs · 16 GB RAM · 100 GB SSD',
+      cost:'$0.71 / run', runtime:'~2.1 hrs', badge:'FEASIBLE', badgeClass:'ok',
+      plan:'Single VM deployment · 4 parallel chromosome sweeps · Checkpoint to S3 every 30 min · Configure security group: SSH port 22 inbound, S3 outbound'
+    },
+    impls: ['Constraint filter','AWS only lock','Pareto optimization','Execution plan']
+  },
+  rnaseq: {
+    trace: [
+      {t:'thought', s:'Workflow decomposition requested — assign different instance per pipeline stage'},
+      {t:'action',  s:"fingerprint_workflow('RNAseq gene expression')"},
+      {t:'observe', s:'workflow_type: rnaseq | cpu: high | ram: high | gpu: false'},
+      {t:'action',  s:"decompose_workflow('rnaseq', total_runtime=4.0)"},
+      {t:'observe', s:'4 stages: preprocessing · alignment · quantification · storage/archival'},
+    ],
+    result: {
+      instance:'Stage-optimized plan', compute:'4 → 16 → 8 → 4 vCPUs across stages',
+      cost:'$3.52 / run', runtime:'~4.0 hrs total', badge:'17% SAVINGS', badgeClass:'info',
+      plan:'Preprocessing: m6i.xlarge ($0.192/hr) · Alignment: r6i.4xlarge ($1.008/hr) · Quantification: c6i.2xlarge ($0.34/hr) · Archival: m6i.xlarge ($0.192/hr) — vs $3.81 single instance'
+    },
+    impls: ['Workflow decomposition','Stage-level optimization','Cost savings']
+  },
+  profiling: {
+    trace: [
+      {t:'thought', s:'Large dataset with unknown behavior — recommend profiling run first'},
+      {t:'action',  s:"fingerprint_workflow('variant calling 150GB dataset')"},
+      {t:'observe', s:'workflow_type: rnaseq | large dataset flagged'},
+      {t:'action',  s:"get_live_pricing(providers=['AWS'], exclude_gpu=true)"},
+      {t:'observe', s:'Cheapest instance: AWS m6i.xlarge at $0.192/hr'},
+      {t:'action',  s:"recommend_profiling_run('rnaseq', full_data_gb=150, instance='m6i.xlarge')"},
+      {t:'observe', s:'Sample: 15 GB (10%) · Est. runtime: 12 min · Cost: $0.038 · Ratio: 10x cheaper'},
+    ],
+    result: {
+      instance:'AWS m6i.xlarge (profiling)', compute:'4 vCPUs · 16 GB RAM',
+      cost:'$0.038 profiling run', runtime:'~12 minutes', badge:'10x CHEAPER', badgeClass:'info',
+      plan:'Run 15 GB sample (10% of 150 GB) · Observe: CPU util, RAM peak, disk I/O, wall-clock time · Use results to validate $0.38 full run · Store profiling output to S3 · Log via feedback loop for future predictions'
+    },
+    impls: ['Profiling-run generation','Adaptive feedback','Cost efficiency: 10x']
+  }
+};
+
+function match(q) {
+  const s = q.toLowerCase();
+  if (s.includes('profiling') || s.includes('150gb') || s.includes('150 gb')) return DEMOS.profiling;
+  if (s.includes('decompose') || s.includes('rnaseq') || s.includes('rna')) return DEMOS.rnaseq;
+  if (s.includes('variant') || s.includes('calling')) return DEMOS.variant;
+  if (s.includes('neuron') || s.includes('stdp') || s.includes('simulation')) return DEMOS.neuron;
+  return null;
+}
+
+function fill(t) {
+  const el = document.getElementById('q');
+  el.value = t;
+  resize(el);
+  el.focus();
+}
+
+function resize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function onKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+}
+
+function scrollBot() {
+  const m = document.getElementById('msgs');
+  m.scrollTop = m.scrollHeight;
+}
+
+function addMsg(role, html) {
+  const w = document.getElementById('welcome');
+  if (w) w.remove();
+  const msgs = document.getElementById('msgs');
+  const row = document.createElement('div');
+  row.className = 'msg-row ' + role;
+  const av = document.createElement('div');
+  av.className = 'avatar ' + role;
+  av.textContent = role === 'agent' ? '☁' : 'S';
+  const bub = document.createElement('div');
+  bub.className = 'bubble';
+  bub.innerHTML = html;
+  row.appendChild(av);
+  row.appendChild(bub);
+  msgs.appendChild(row);
+  scrollBot();
+  return bub;
+}
+
+function showTyping() {
+  const w = document.getElementById('welcome');
+  if (w) w.remove();
+  const msgs = document.getElementById('msgs');
+  const row = document.createElement('div');
+  row.className = 'msg-row agent';
+  row.id = 'typing';
+  const av = document.createElement('div');
+  av.className = 'avatar agent';
+  av.textContent = '☁';
+  const bub = document.createElement('div');
+  bub.className = 'bubble';
+  bub.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+  row.appendChild(av);
+  row.appendChild(bub);
+  msgs.appendChild(row);
+  scrollBot();
+}
+
+function hideTyping() {
+  const t = document.getElementById('typing');
+  if (t) t.remove();
+}
+
+function traceHTML(steps) {
+  const labels = { thought:'THOUGHT', action:'ACTION', observe:'OBS' };
+  return `<div class="trace">
+    <div class="trace-header">Reasoning trace</div>
+    ${steps.map(s => `<div class="trace-step"><span class="tag ${s.t}">${labels[s.t]}</span><span>${s.s}</span></div>`).join('')}
+  </div>`;
+}
+
+function resultHTML(r) {
+  return `<div class="result">
+    <div class="result-head">Recommendation</div>
+    <div class="result-row"><span class="rl">Instance</span><span class="rv">${r.instance}</span></div>
+    <div class="result-row"><span class="rl">Compute</span><span class="rv">${r.compute}</span></div>
+    <div class="result-row"><span class="rl">Estimated cost</span><span class="rv">${r.cost}</span></div>
+    <div class="result-row"><span class="rl">Estimated runtime</span><span class="rv">${r.runtime}</span></div>
+    <div class="result-row"><span class="rl">Status</span><span class="badge ${r.badgeClass}">${r.badge}</span></div>
+    <div class="result-row plan-row">
+      <span class="rl">Execution plan</span>
+      <div class="plan-text">${r.plan}</div>
+    </div>
+  </div>`;
+}
+
+function implHTML(tags) {
+  return `<div class="impl-row">${tags.map(t => `<span class="impl-tag">${t}</span>`).join('')}</div>`;
+}
+
+async function send() {
+  const el = document.getElementById('q');
+  const q = el.value.trim();
+  if (!q) return;
+  el.value = '';
+  resize(el);
+
+  addMsg('user', q);
+  showTyping();
+  await sleep(600);
+  hideTyping();
+
+  const demo = match(q);
+
+  if (demo) {
+    showTyping();
+    await sleep(900);
+    hideTyping();
+    addMsg('agent', 'Here is what I found:' + traceHTML(demo.trace) + resultHTML(demo.result) + implHTML(demo.impls));
+  } else {
+    showTyping();
+    await sleep(700);
+    hideTyping();
+    addMsg('agent', `I received your query. In the full agent, I would fingerprint your workflow, query live pricing, run Pareto optimization, apply constraints, and return a deployment-ready recommendation.<br><br>Try one of the preset queries to see a full simulation, or connect a local model via Ollama for live responses.`);
+  }
+
+  scrollBot();
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+</script>
+</body>
+</html>
