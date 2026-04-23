@@ -1,53 +1,104 @@
 """
 tools.py — The 5 capabilities of the Cloud Resource Configuration Agent.
 
-Each function is a LangGraph tool the agent can call during reasoning.
-
-Implementation mapping (from Sanjit's slides):
-  1. fingerprint_workflow()         → workload fingerprinting classifier
-  2. get_live_pricing()             → live cloud pricing API (mocked)
-  3. run_multiobjective_opt()       → Pareto-optimal config selection
-  4. constraint_filter()           → Implementation 1: Constraint-driven configuration
-  5. recommend_execution_plan()    → Implementation 2: Execution recommendation
-  6. log_run_feedback()            → Implementation 3: Adaptive feedback loop
-  7. decompose_workflow()          → Implementation 4: Workflow decomposition
-  8. recommend_profiling_run()     → Implementation 5: Profiling-run generation
+Fixes applied (per Pari Hirenkumar's review):
+  Fix 4: _feedback_store backed by SQLite — persists across process restarts
+  Fix 5: fingerprint_workflow scores ALL profiles, returns best match
+  Fix 6: recommend_profiling_run estimates runtime from actual traces
 """
 
 import json
-import math
-from typing import Any
+import sqlite3
+import os
 from langchain_core.tools import tool
 
 from data.mock_pricing import PRICING_CATALOG, WORKFLOW_TRACES, WORKFLOW_STAGES
+
+# ─────────────────────────────────────────────
+# Fix 4: SQLite-backed feedback store
+# ─────────────────────────────────────────────
+
+DB_PATH = os.environ.get("FEEDBACK_DB_PATH", "data/feedback.db")
+
+def _init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_type TEXT,
+            instance TEXT,
+            vcpu INTEGER,
+            ram_gb INTEGER,
+            predicted_runtime_hrs REAL,
+            actual_runtime_hrs REAL,
+            prediction_error_pct REAL,
+            success INTEGER,
+            cpu_util REAL,
+            ram_util REAL,
+            user_accepted INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+_init_db()
+
+
+def _write_feedback(record: dict):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO feedback (
+            workflow_type, instance, vcpu, ram_gb,
+            predicted_runtime_hrs, actual_runtime_hrs, prediction_error_pct,
+            success, cpu_util, ram_util, user_accepted
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        record["workflow_type"], record["instance"], record["vcpu"], record["ram_gb"],
+        record["predicted_runtime_hrs"], record["actual_runtime_hrs"], record["prediction_error_pct"],
+        int(record["success"]), record["cpu_util"], record["ram_util"], int(record["user_accepted"])
+    ))
+    conn.commit()
+    conn.close()
+
+
+def _read_feedback(workflow_type: str = None) -> list:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    if workflow_type:
+        rows = conn.execute(
+            "SELECT * FROM feedback WHERE workflow_type = ? ORDER BY created_at DESC",
+            (workflow_type,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM feedback ORDER BY created_at DESC"
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 
 # ─────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────
 
 def _estimate_runtime(instance: dict, workflow_type: str) -> float:
-    """Estimate runtime in hours based on historical traces for this workflow type."""
     traces = WORKFLOW_TRACES.get(workflow_type, [])
     if not traces:
-        return 2.0  # default fallback
-
-    # Find closest match by vcpu
+        return 2.0
     target_vcpu = instance["vcpu"]
     sorted_traces = sorted(traces, key=lambda t: abs(t["vcpu"] - target_vcpu))
     closest = sorted_traces[0]
-
-    # Scale runtime inversely with vcpu ratio
     ratio = closest["vcpu"] / max(target_vcpu, 1)
-    estimated = closest["runtime_hrs"] * ratio
-    return round(estimated, 2)
+    return round(closest["runtime_hrs"] * ratio, 2)
 
 
 def _cost_per_run(instance: dict, runtime_hrs: float) -> float:
     return round(instance["price_hr"] * runtime_hrs, 3)
 
 
-def _pareto_front(candidates: list[dict]) -> list[dict]:
-    """Return Pareto-optimal configs (minimize cost AND runtime — neither dominates the other)."""
+def _pareto_front(candidates: list) -> list:
     pareto = []
     for c in candidates:
         dominated = False
@@ -66,14 +117,15 @@ def _pareto_front(candidates: list[dict]) -> list[dict]:
 
 
 # ─────────────────────────────────────────────
-# Tool 1 — Workflow Fingerprinting
+# Tool 1: Workflow Fingerprinting
+# Fix 5: Score ALL profiles, return best match — not first keyword hit
 # ─────────────────────────────────────────────
 
 @tool
 def fingerprint_workflow(workflow_description: str) -> str:
     """
     Classify a workflow description into a known type and resource profile.
-    Returns workflow_type, cpu_intensity, ram_intensity, gpu_needed, and notes.
+    Scores ALL profiles by keyword count and returns the best match.
 
     Args:
         workflow_description: Natural language description of the scientific workflow.
@@ -82,28 +134,33 @@ def fingerprint_workflow(workflow_description: str) -> str:
 
     profiles = {
         "neuron_simulation": {
-            "keywords": ["neuron", "simulation", "hodgkin", "huxley", "stdp", "single cell", "electrophysiol"],
+            "keywords": ["neuron", "simulation", "hodgkin", "huxley", "stdp",
+                         "single cell", "electrophysiol", "neuroscience", "genesis"],
             "cpu_intensity": "high",
             "ram_intensity": "medium",
             "gpu_needed": False,
             "notes": "CPU-bound; NEURON/GENESIS tools do not benefit from GPU for single-cell models.",
         },
         "rnaseq": {
-            "keywords": ["rnaseq", "rna-seq", "rna seq", "gene expression", "transcriptomics", "alignment", "seurat", "cell ranger"],
+            "keywords": ["rnaseq", "rna-seq", "rna seq", "gene expression", "transcriptomics",
+                         "seurat", "cell ranger", "hisat", "differential expression",
+                         "alignment_to_differential_expression", "bioinformatics",
+                         "variant", "calling", "gatk", "samtools", "bcftools", "vcf", "snp"],
             "cpu_intensity": "high",
             "ram_intensity": "high",
             "gpu_needed": False,
             "notes": "Memory-intensive; large reference genome requires high RAM.",
         },
         "fastqc": {
-            "keywords": ["fastqc", "quality control", "qc", "sequencing quality", "fastq"],
+            "keywords": ["fastqc", "quality control", "qc", "sequencing quality",
+                         "fastq", "trimming", "trimmomatic"],
             "cpu_intensity": "medium",
             "ram_intensity": "low",
             "gpu_needed": False,
             "notes": "Lightweight; suitable for small instances.",
         },
         "pgen": {
-            "keywords": ["pgen", "population genetics", "variant", "gwas"],
+            "keywords": ["pgen", "population genetics", "variant calling", "gwas", "genome wide"],
             "cpu_intensity": "high",
             "ram_intensity": "medium",
             "gpu_needed": False,
@@ -111,63 +168,65 @@ def fingerprint_workflow(workflow_description: str) -> str:
         },
     }
 
-    matched_type = "generic"
-    matched_profile = {
-        "cpu_intensity": "medium",
-        "ram_intensity": "medium",
-        "gpu_needed": False,
-        "notes": "No specific profile matched. Using generic medium-resource profile.",
+    # Score all profiles — pick highest, not first match
+    scores = {
+        wf_type: sum(1 for kw in profile["keywords"] if kw in desc)
+        for wf_type, profile in profiles.items()
     }
 
-    for wf_type, profile in profiles.items():
-        if any(kw in desc for kw in profile["keywords"]):
-            matched_type = wf_type
-            matched_profile = profile
-            break
+    best_type = max(scores, key=lambda k: scores[k])
 
-    result = {"workflow_type": matched_type, **matched_profile}
+    if scores[best_type] == 0:
+        return json.dumps({
+            "workflow_type": "generic",
+            "cpu_intensity": "medium",
+            "ram_intensity": "medium",
+            "gpu_needed": False,
+            "notes": "No specific profile matched. Using generic medium-resource profile.",
+            "match_scores": scores,
+        }, indent=2)
+
+    result = {
+        "workflow_type": best_type,
+        **{k: v for k, v in profiles[best_type].items() if k != "keywords"},
+        "match_scores": scores,
+    }
     return json.dumps(result, indent=2)
 
 
 # ─────────────────────────────────────────────
-# Tool 2 — Live Pricing Query (mocked)
+# Tool 2: Live Pricing Query (mocked)
 # ─────────────────────────────────────────────
 
 @tool
 def get_live_pricing(
-    providers: list[str],
+    providers: list,
     min_vcpu: int = 1,
     min_ram_gb: int = 1,
     exclude_gpu: bool = False,
 ) -> str:
     """
     Query cloud pricing catalog for instances matching requirements.
-    Currently uses a mock catalog; swap for boto3/GCP/Azure SDK calls when credentials are available.
 
     Args:
-        providers:    List of cloud providers to include, e.g. ["AWS", "GCP", "Azure"].
-        min_vcpu:     Minimum number of virtual CPUs required.
+        providers:    List of cloud providers e.g. ["AWS", "GCP", "Azure"].
+        min_vcpu:     Minimum vCPUs required.
         min_ram_gb:   Minimum RAM in GB required.
         exclude_gpu:  If True, filter out GPU instances.
     """
-    results = []
-    for inst in PRICING_CATALOG:
-        if inst["provider"] not in providers:
-            continue
-        if inst["vcpu"] < min_vcpu:
-            continue
-        if inst["ram_gb"] < min_ram_gb:
-            continue
-        if exclude_gpu and inst["gpu"]:
-            continue
-        results.append(inst)
-
+    results = [
+        inst for inst in PRICING_CATALOG
+        if inst["provider"] in providers
+        and inst["vcpu"] >= min_vcpu
+        and inst["ram_gb"] >= min_ram_gb
+        and not (exclude_gpu and inst["gpu"])
+    ]
     results.sort(key=lambda x: x["price_hr"])
     return json.dumps(results, indent=2)
 
 
 # ─────────────────────────────────────────────
-# Tool 3 — Multi-objective Optimization (Pareto front)
+# Tool 3: Multi-objective Optimization
 # ─────────────────────────────────────────────
 
 @tool
@@ -176,13 +235,11 @@ def run_multiobjective_optimization(
     workflow_type: str,
 ) -> str:
     """
-    Given a list of candidate instances (as JSON string from get_live_pricing),
-    compute estimated runtime and cost-per-run for each, then return the
-    Pareto-optimal set (minimizing both cost and runtime simultaneously).
+    Compute Pareto-optimal configs minimizing both cost and runtime.
 
     Args:
-        instances_json: JSON string list of instance dicts from get_live_pricing.
-        workflow_type:  The workflow type string from fingerprint_workflow.
+        instances_json: JSON string list of instances from get_live_pricing.
+        workflow_type:  Workflow type string from fingerprint_workflow.
     """
     try:
         instances = json.loads(instances_json)
@@ -198,19 +255,20 @@ def run_multiobjective_optimization(
     pareto = _pareto_front(enriched)
     pareto.sort(key=lambda x: x["estimated_cost_per_run"])
 
-    # Label the front
     if pareto:
         pareto[0]["label"] = "COST_OPTIMAL"
         pareto[-1]["label"] = "PERFORMANCE_OPTIMAL"
         if len(pareto) > 2:
-            mid = len(pareto) // 2
-            pareto[mid]["label"] = "BALANCED"
+            pareto[len(pareto) // 2]["label"] = "BALANCED"
 
-    return json.dumps({"pareto_front": pareto, "total_candidates_evaluated": len(enriched)}, indent=2)
+    return json.dumps({
+        "pareto_front": pareto,
+        "total_candidates_evaluated": len(enriched)
+    }, indent=2)
 
 
 # ─────────────────────────────────────────────
-# Tool 4 — Implementation 1: Constraint-driven Configuration
+# Tool 4: Implementation 1 — Constraint-driven Config
 # ─────────────────────────────────────────────
 
 @tool
@@ -222,16 +280,14 @@ def constraint_filter(
     max_ram_gb: int = None,
 ) -> str:
     """
-    [Implementation 1: Constraint-driven Configuration]
-    Filter Pareto-optimal configs to only those satisfying hard user constraints.
-    Unlike preference-based ranking, this enforces strict feasibility boundaries.
+    [Implementation 1] Filter Pareto configs to only those satisfying hard constraints.
 
     Args:
-        pareto_json:       JSON string of Pareto front from run_multiobjective_optimization.
-        max_cost_per_run:  Hard budget ceiling in USD per run (e.g., 1.50).
-        max_runtime_hrs:   Hard time ceiling in hours (e.g., 2.0).
-        required_region:   Cloud provider constraint (e.g., "AWS" to restrict to AWS only).
-        max_ram_gb:        Max RAM allowed (e.g., for data privacy or licensing reasons).
+        pareto_json:       JSON string of Pareto front.
+        max_cost_per_run:  Hard budget ceiling in USD.
+        max_runtime_hrs:   Hard time ceiling in hours.
+        required_region:   Provider constraint e.g. "AWS".
+        max_ram_gb:        Max RAM allowed in GB.
     """
     try:
         data = json.loads(pareto_json)
@@ -239,8 +295,7 @@ def constraint_filter(
     except json.JSONDecodeError:
         return json.dumps({"error": "Invalid JSON for pareto_json"})
 
-    feasible = []
-    rejected = []
+    feasible, rejected = [], []
 
     for c in candidates:
         reasons = []
@@ -271,7 +326,7 @@ def constraint_filter(
 
 
 # ─────────────────────────────────────────────
-# Tool 5 — Implementation 2: Execution Recommendation
+# Tool 5: Implementation 2 — Execution Recommendation
 # ─────────────────────────────────────────────
 
 @tool
@@ -280,13 +335,11 @@ def recommend_execution_plan(
     chosen_instance_json: str,
 ) -> str:
     """
-    [Implementation 2: Execution Recommendation]
-    Given a workflow type and chosen instance, recommend HOW to run it —
-    not just where. Covers parallelism strategy, checkpointing, and execution topology.
+    [Implementation 2] Recommend HOW to run — topology, parallelism, checkpointing.
 
     Args:
-        workflow_type:         The workflow type string from fingerprint_workflow.
-        chosen_instance_json:  JSON string of the selected instance config.
+        workflow_type:         Workflow type string.
+        chosen_instance_json:  JSON string of the selected instance.
     """
     try:
         inst = json.loads(chosen_instance_json)
@@ -294,33 +347,32 @@ def recommend_execution_plan(
         return json.dumps({"error": "Invalid JSON for chosen_instance_json"})
 
     vcpu = inst.get("vcpu", 4)
-    ram = inst.get("ram_gb", 16)
 
     plans = {
         "neuron_simulation": {
             "topology": "Single large VM",
-            "parallelism": f"Run {max(1, vcpu // 2)} parallel parameter sweeps using GNU Parallel or NEURON's built-in batch mode.",
+            "parallelism": f"Run {max(1, vcpu // 2)} parallel parameter sweeps using GNU Parallel.",
             "checkpointing": "Save simulation state every 500ms simulated time using NEURON's SaveState.",
             "preprocess_instance": "Same instance (lightweight preprocessing).",
             "notes": "Sequential execution acceptable for single-cell; parallelism helps for parameter sweeps.",
         },
         "rnaseq": {
-            "topology": "Preprocess on CPU-optimized → Align on memory-optimized → Quantify → Archive to cold storage",
-            "parallelism": f"Split FASTQ by chromosome; run {vcpu} alignment threads with HISAT2 -p {vcpu}.",
-            "checkpointing": "Use Pegasus workflow checkpointing; resume from last successful stage on failure.",
-            "preprocess_instance": "Use a smaller instance (e.g., m6i.xlarge) for QC/trimming before alignment.",
-            "notes": "Memory bottleneck is at alignment; ensure RAM ≥ 32GB for human genome index.",
+            "topology": "Preprocess on CPU-optimized → Align on memory-optimized → Quantify → Archive",
+            "parallelism": f"Split FASTQ by chromosome; run {vcpu} threads with HISAT2 -p {vcpu}.",
+            "checkpointing": "Use Pegasus checkpointing; resume from last successful stage on failure.",
+            "preprocess_instance": "Use m6i.xlarge for QC/trimming before alignment.",
+            "notes": "Memory bottleneck at alignment; ensure RAM >= 32GB for human genome index.",
         },
         "fastqc": {
             "topology": "Single small VM",
-            "parallelism": f"Run FastQC with --threads {vcpu} flag.",
+            "parallelism": f"Run FastQC with --threads {vcpu}.",
             "checkpointing": "Not needed — runtime < 1hr.",
             "preprocess_instance": "N/A",
-            "notes": "Lightweight; consider spot/preemptible instances to reduce cost.",
+            "notes": "Lightweight; consider spot/preemptible instances.",
         },
         "generic": {
             "topology": "Single VM",
-            "parallelism": "No specific parallelism strategy identified. Consult workflow documentation.",
+            "parallelism": "No specific strategy identified. Consult workflow documentation.",
             "checkpointing": "Recommended for runtimes > 2hrs.",
             "preprocess_instance": "N/A",
             "notes": "Profile the workload before scaling.",
@@ -336,11 +388,9 @@ def recommend_execution_plan(
 
 
 # ─────────────────────────────────────────────
-# Tool 6 — Implementation 3: Adaptive Feedback Loop
+# Tool 6: Implementation 3 — Adaptive Feedback Loop
+# Fix 4: SQLite persistence
 # ─────────────────────────────────────────────
-
-# In-memory store (replace with a DB in production)
-_feedback_store: list[dict] = []
 
 @tool
 def log_run_feedback(
@@ -356,70 +406,64 @@ def log_run_feedback(
     user_accepted: bool,
 ) -> str:
     """
-    [Implementation 3: Adaptive Feedback Loop]
-    Log the outcome of an actual workflow run. The agent uses this data to:
-      - Compute prediction error
-      - Flag systematic over/under-estimation
-      - Personalize future rankings
-      - Build workload-specific confidence scores
+    [Implementation 3] Log actual run outcome to SQLite for persistent learning.
 
     Args:
-        workflow_type:         Workflow type string.
-        instance:              Instance name that was used.
-        vcpu / ram_gb:         Actual resources used.
-        predicted_runtime_hrs: What the agent predicted before the run.
-        actual_runtime_hrs:    What actually happened.
+        workflow_type / instance / vcpu / ram_gb: Run context.
+        predicted_runtime_hrs: Agent prediction before the run.
+        actual_runtime_hrs:    Actual observed runtime.
         success:               Whether the run completed successfully.
-        cpu_util / ram_util:   Observed utilization (0.0 to 1.0).
-        user_accepted:         Whether the user accepted this recommendation.
+        cpu_util / ram_util:   Observed utilization 0.0 to 1.0.
+        user_accepted:         Whether user accepted this recommendation.
     """
-    error_pct = round(abs(actual_runtime_hrs - predicted_runtime_hrs) / max(predicted_runtime_hrs, 0.01) * 100, 1)
+    error_pct = round(
+        abs(actual_runtime_hrs - predicted_runtime_hrs) / max(predicted_runtime_hrs, 0.01) * 100, 1
+    )
 
     record = {
-        "workflow_type": workflow_type,
-        "instance": instance,
-        "vcpu": vcpu,
-        "ram_gb": ram_gb,
+        "workflow_type": workflow_type, "instance": instance,
+        "vcpu": vcpu, "ram_gb": ram_gb,
         "predicted_runtime_hrs": predicted_runtime_hrs,
         "actual_runtime_hrs": actual_runtime_hrs,
         "prediction_error_pct": error_pct,
-        "success": success,
-        "cpu_util": cpu_util,
-        "ram_util": ram_util,
-        "user_accepted": user_accepted,
+        "success": success, "cpu_util": cpu_util,
+        "ram_util": ram_util, "user_accepted": user_accepted,
     }
-    _feedback_store.append(record)
 
-    # Derive insights
+    _write_feedback(record)
+    total = len(_read_feedback())
+
     insights = []
     if error_pct > 25:
         direction = "underestimated" if actual_runtime_hrs > predicted_runtime_hrs else "overestimated"
-        insights.append(f"Prediction {direction} by {error_pct}% — model will adjust for {workflow_type} on {instance}.")
+        insights.append(f"Prediction {direction} by {error_pct}% — adjust for {workflow_type} on {instance}.")
     if not success:
-        insights.append("Run failed — this instance will be ranked lower for this workflow in future recommendations.")
+        insights.append("Run failed — instance ranked lower for this workflow in future.")
     if cpu_util < 0.4:
-        insights.append(f"Low CPU utilization ({cpu_util:.0%}) — consider downsizing vCPU for this workflow.")
+        insights.append(f"Low CPU utilization ({cpu_util:.0%}) — consider downsizing vCPU.")
     if ram_util > 0.9:
-        insights.append(f"High RAM utilization ({ram_util:.0%}) — consider upsizing RAM for this workflow.")
+        insights.append(f"High RAM utilization ({ram_util:.0%}) — consider upsizing RAM.")
     if user_accepted:
-        insights.append("User accepted this recommendation — confidence score increased.")
+        insights.append("User accepted — confidence score increased.")
 
     return json.dumps({
         "feedback_logged": record,
-        "total_feedback_records": len(_feedback_store),
+        "total_feedback_records": total,
+        "persisted_to": DB_PATH,
         "insights": insights,
     }, indent=2)
 
 
 @tool
-def get_feedback_summary(workflow_type: str = None) -> str:
+def get_feedback_summary(workflow_type: str = "all") -> str:
     """
-    Retrieve aggregated feedback statistics to show adaptive learning over time.
+    Retrieve aggregated feedback from SQLite.
 
     Args:
-        workflow_type: Optional filter. If None, returns stats for all workflows.
+        workflow_type: Filter by workflow type. Pass "all" for everything.
     """
-    records = [r for r in _feedback_store if workflow_type is None or r["workflow_type"] == workflow_type]
+    wf = None if workflow_type == "all" else workflow_type
+    records = _read_feedback(wf)
 
     if not records:
         return json.dumps({"message": "No feedback records yet.", "total": 0})
@@ -429,17 +473,17 @@ def get_feedback_summary(workflow_type: str = None) -> str:
     acceptance_rate = round(sum(1 for r in records if r["user_accepted"]) / len(records) * 100, 1)
 
     return json.dumps({
-        "workflow_type_filter": workflow_type or "all",
+        "workflow_type_filter": workflow_type,
         "total_runs_logged": len(records),
         "avg_prediction_error_pct": avg_error,
         "success_rate_pct": success_rate,
         "recommendation_acceptance_rate_pct": acceptance_rate,
-        "records": records,
+        "persisted_to": DB_PATH,
     }, indent=2)
 
 
 # ─────────────────────────────────────────────
-# Tool 7 — Implementation 4: Workflow Decomposition
+# Tool 7: Implementation 4 — Workflow Decomposition
 # ─────────────────────────────────────────────
 
 @tool
@@ -448,39 +492,34 @@ def decompose_workflow(
     total_estimated_runtime_hrs: float,
 ) -> str:
     """
-    [Implementation 4: Workflow Decomposition]
-    Instead of recommending a single instance for the whole workflow,
-    decompose the workflow into stages and recommend the optimal instance
-    type for each stage (e.g., cheap CPU for preprocessing, high-RAM for alignment).
+    [Implementation 4] Recommend optimal instance type per workflow stage.
 
     Args:
-        workflow_type:                  Workflow type string from fingerprint_workflow.
-        total_estimated_runtime_hrs:    Total runtime estimate for the full workflow.
+        workflow_type:                  Workflow type string.
+        total_estimated_runtime_hrs:    Total runtime estimate.
     """
     stages = WORKFLOW_STAGES.get(workflow_type, [
         {"stage": "main", "cpu_intensity": "medium", "ram_intensity": "medium", "duration_fraction": 1.0}
     ])
 
-    # Instance type recommendations per intensity combo
     type_map = {
-        ("high",   "high"):   {"recommended_type": "Memory+Compute optimized", "example_aws": "r6i.4xlarge",   "example_gcp": "n2-highmem-8",    "rationale": "Both CPU and RAM are stressed."},
-        ("high",   "medium"): {"recommended_type": "Compute optimized",        "example_aws": "c6i.4xlarge",   "example_gcp": "c2-standard-16",   "rationale": "CPU-bound; standard RAM sufficient."},
-        ("high",   "low"):    {"recommended_type": "Compute optimized",        "example_aws": "c6i.2xlarge",   "example_gcp": "c2-standard-8",    "rationale": "CPU-bound; minimal RAM needed."},
-        ("medium", "high"):   {"recommended_type": "Memory optimized",         "example_aws": "r6i.2xlarge",   "example_gcp": "n2-highmem-8",    "rationale": "Memory bottleneck; moderate CPU."},
-        ("medium", "medium"): {"recommended_type": "General purpose",          "example_aws": "m6i.2xlarge",   "example_gcp": "n2-standard-4",   "rationale": "Balanced workload."},
-        ("medium", "low"):    {"recommended_type": "General purpose (small)",  "example_aws": "m6i.xlarge",    "example_gcp": "n2-standard-4",   "rationale": "Light workload."},
-        ("low",    "low"):    {"recommended_type": "Spot/Preemptible small",   "example_aws": "m6i.xlarge",    "example_gcp": "n2-standard-4",   "rationale": "Use cheapest available; consider spot pricing."},
-        ("low",    "high"):   {"recommended_type": "Memory optimized (small)", "example_aws": "r6i.2xlarge",   "example_gcp": "n2-highmem-8",   "rationale": "RAM-bound with low compute."},
+        ("high",   "high"):   {"recommended_type": "Memory+Compute optimized", "example_aws": "r6i.4xlarge",  "rationale": "Both CPU and RAM stressed."},
+        ("high",   "medium"): {"recommended_type": "Compute optimized",        "example_aws": "c6i.4xlarge",  "rationale": "CPU-bound; standard RAM sufficient."},
+        ("high",   "low"):    {"recommended_type": "Compute optimized",        "example_aws": "c6i.2xlarge",  "rationale": "CPU-bound; minimal RAM needed."},
+        ("medium", "high"):   {"recommended_type": "Memory optimized",         "example_aws": "r6i.2xlarge",  "rationale": "Memory bottleneck; moderate CPU."},
+        ("medium", "medium"): {"recommended_type": "General purpose",          "example_aws": "m6i.2xlarge",  "rationale": "Balanced workload."},
+        ("medium", "low"):    {"recommended_type": "General purpose (small)",  "example_aws": "m6i.xlarge",   "rationale": "Light workload."},
+        ("low",    "low"):    {"recommended_type": "Spot/Preemptible small",   "example_aws": "m6i.xlarge",   "rationale": "Use cheapest; consider spot pricing."},
+        ("low",    "high"):   {"recommended_type": "Memory optimized (small)", "example_aws": "r6i.2xlarge",  "rationale": "RAM-bound with low compute."},
     }
 
     plan = []
     for s in stages:
         key = (s["cpu_intensity"], s["ram_intensity"])
         rec = type_map.get(key, type_map[("medium", "medium")])
-        stage_runtime = round(total_estimated_runtime_hrs * s["duration_fraction"], 2)
         plan.append({
             "stage": s["stage"],
-            "duration_hrs": stage_runtime,
+            "duration_hrs": round(total_estimated_runtime_hrs * s["duration_fraction"], 2),
             "cpu_intensity": s["cpu_intensity"],
             "ram_intensity": s["ram_intensity"],
             **rec,
@@ -489,12 +528,13 @@ def decompose_workflow(
     return json.dumps({
         "workflow_type": workflow_type,
         "stage_resource_plan": plan,
-        "note": "Separate instances per stage can reduce cost vs. over-provisioning a single large instance.",
+        "note": "Separate instances per stage reduce cost vs single over-provisioned instance.",
     }, indent=2)
 
 
 # ─────────────────────────────────────────────
-# Tool 8 — Implementation 5: Profiling-Run Generation
+# Tool 8: Implementation 5 — Profiling-Run Generation
+# Fix 6: Runtime from actual traces, not hardcoded 0.2hrs
 # ─────────────────────────────────────────────
 
 @tool
@@ -504,15 +544,13 @@ def recommend_profiling_run(
     pareto_json: str,
 ) -> str:
     """
-    [Implementation 5: Profiling-Run Generation]
-    Before committing to a full deployment, suggest a small-scale profiling run
-    to learn the workflow's actual resource behavior. The agent intelligently
-    selects a profiling instance and data subsample size.
+    [Implementation 5] Recommend a small-scale profiling run before full deployment.
+    Runtime estimated from actual workflow traces scaled by sample fraction.
 
     Args:
         workflow_type:       Workflow type string.
-        full_data_size_gb:   Size of the full dataset in GB.
-        pareto_json:         JSON string of Pareto front for reference.
+        full_data_size_gb:   Full dataset size in GB.
+        pareto_json:         JSON string of Pareto front.
     """
     try:
         data = json.loads(pareto_json)
@@ -520,33 +558,39 @@ def recommend_profiling_run(
     except json.JSONDecodeError:
         candidates = []
 
-    # Pick the cheapest candidate for the profiling run
-    profiling_instance = None
-    if candidates:
-        profiling_instance = min(candidates, key=lambda x: x.get("price_hr", 999))
+    profiling_instance = min(candidates, key=lambda x: x.get("price_hr", 999)) if candidates else None
 
-    # Recommend 10% data sample, min 1GB, max 20GB
     sample_size_gb = round(min(max(full_data_size_gb * 0.10, 1.0), 20.0), 1)
-    estimated_profiling_runtime = round(0.10 * 2.0, 2)  # ~10% of typical 2hr run
+    sample_fraction = sample_size_gb / max(full_data_size_gb, 1.0)
 
-    observations_to_collect = [
-        "Wall-clock runtime",
-        "Peak CPU utilization (via top/htop or CloudWatch)",
-        "Peak RAM utilization",
-        "Disk I/O throughput",
-        "Whether the workflow scales linearly with data size",
-    ]
+    # Fix 6: Use actual traces to estimate profiling runtime
+    traces = WORKFLOW_TRACES.get(workflow_type, [])
+    if traces and profiling_instance:
+        inst_vcpu = profiling_instance.get("vcpu", 4)
+        closest = min(traces, key=lambda t: abs(t["vcpu"] - inst_vcpu))
+        estimated_profiling_runtime = round(max(closest["runtime_hrs"] * sample_fraction, 0.05), 2)
+        runtime_basis = f"scaled from {closest['runtime_hrs']}hr trace on {closest['vcpu']}-vcpu instance"
+    else:
+        estimated_profiling_runtime = round(max(sample_fraction * 2.0, 0.05), 2)
+        runtime_basis = "default estimate (no traces available for this workflow type)"
+
+    price_hr = profiling_instance.get("price_hr", 0.20) if profiling_instance else 0.20
 
     return json.dumps({
         "recommendation": "Run a small-scale profiling job before full deployment.",
-        "profiling_instance": profiling_instance.get("instance") if profiling_instance else "Use smallest available instance",
-        "profiling_provider": profiling_instance.get("provider") if profiling_instance else "Any",
+        "profiling_instance": profiling_instance.get("instance") if profiling_instance else "smallest available",
+        "profiling_provider": profiling_instance.get("provider") if profiling_instance else "any",
         "sample_data_size_gb": sample_size_gb,
-        "sample_fraction_pct": 10,
+        "sample_fraction_pct": round(sample_fraction * 100, 1),
         "estimated_profiling_runtime_hrs": estimated_profiling_runtime,
-        "estimated_profiling_cost_usd": round(
-            (profiling_instance.get("price_hr", 0.20) if profiling_instance else 0.20) * estimated_profiling_runtime, 3
-        ),
-        "observations_to_collect": observations_to_collect,
+        "estimated_profiling_cost_usd": round(price_hr * estimated_profiling_runtime, 3),
+        "runtime_basis": runtime_basis,
+        "observations_to_collect": [
+            "Wall-clock runtime",
+            "Peak CPU utilization via top/htop or CloudWatch",
+            "Peak RAM utilization",
+            "Disk I/O throughput",
+            "Whether workflow scales linearly with data size",
+        ],
         "next_step": "Feed profiling results back via log_run_feedback() to improve full-run predictions.",
     }, indent=2)
