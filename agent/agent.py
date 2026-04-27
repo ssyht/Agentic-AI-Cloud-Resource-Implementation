@@ -1,7 +1,7 @@
 """
 agent.py — Cloud Resource Configuration Agent
 
-Fixes applied (per Pari Hirenkumar's review):
+Fixes applied:
   Fix 1: Configurable LLM backend via AGENT_LLM_BACKEND env var
          Defaults to Anthropic Claude (matching DOME's stack)
          Supports "ollama" for local open-source model
